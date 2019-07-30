@@ -1,10 +1,10 @@
 package com.example.flutternativeimage;
 
+import android.app.Activity;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.media.ExifInterface;
 import android.util.Log;
-import android.app.Activity;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -12,19 +12,15 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
 
-import java.lang.IllegalArgumentException;
-
+import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
-import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.PluginRegistry.Registrar;
-
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.HashMap;
 
 /**
  * FlutterNativeImagePlugin
@@ -62,20 +58,21 @@ public class FlutterNativeImagePlugin implements MethodCallHandler {
       Bitmap bmp = BitmapFactory.decodeFile(fileName);
       ByteArrayOutputStream bos = new ByteArrayOutputStream();
 
-      if (bmp.getHeight() > 1500 || bmp.getWidth() > 1500) {
-        int newWidth = targetWidth == 0 ? (bmp.getWidth() / 100 * resizePercentage) : targetWidth;
-        int newHeight = targetHeight == 0 ? (bmp.getHeight() / 100 * resizePercentage) : targetHeight;
+      int newWidth = targetWidth == 0 ? (bmp.getWidth() / 100 * resizePercentage) : targetWidth;
+      int newHeight = targetHeight == 0 ? (bmp.getHeight() / 100 * resizePercentage) : targetHeight;
 
-        bmp = Bitmap.createScaledBitmap(
-                bmp, newWidth, newHeight, false);
-      }
+      bmp = Bitmap.createScaledBitmap(
+              bmp, newWidth, newHeight, true);
 
-      bmp.compress(Bitmap.CompressFormat.JPEG, quality, bos);
+      // reconfigure bitmap to use RGB_565 before compressing
+      // fixes https://github.com/btastic/flutter_native_image/issues/47
+      Bitmap newBmp = bmp.copy(Bitmap.Config.RGB_565, false);
+      newBmp.compress(Bitmap.CompressFormat.JPEG, quality, bos);
 
       try {
         String outputFileName = File.createTempFile(
-          getFilenameWithoutExtension(file).concat("_compressed"), 
-          ".jpg", 
+          getFilenameWithoutExtension(file).concat("_compressed"),
+          ".jpg",
           activity.getExternalCacheDir()
         ).getPath();
 
@@ -107,10 +104,18 @@ public class FlutterNativeImagePlugin implements MethodCallHandler {
       BitmapFactory.Options options = new BitmapFactory.Options();
       options.inJustDecodeBounds = true;
       BitmapFactory.decodeFile(fileName,options);
-
       HashMap<String, Integer> properties = new HashMap<String, Integer>();
-      properties.put("width",options.outWidth);
-      properties.put("height",options.outHeight);
+      properties.put("width", options.outWidth);
+      properties.put("height", options.outHeight);
+
+      int orientation = ExifInterface.ORIENTATION_UNDEFINED;
+      try {
+        ExifInterface exif = new ExifInterface(fileName);
+        orientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_UNDEFINED);
+      } catch(IOException ex) {
+        // EXIF could not be read from the file; ignore
+      }
+      properties.put("orientation", orientation);
 
       result.success(properties);
       return;
@@ -140,16 +145,18 @@ public class FlutterNativeImagePlugin implements MethodCallHandler {
       }
 
       bmp.compress(Bitmap.CompressFormat.JPEG, 100, bos);
-
+      bmp.recycle();
+        OutputStream outputStream = null;
     	try {
         String outputFileName = File.createTempFile(
-          getFilenameWithoutExtension(file).concat("_cropped"), 
-          ".jpg", 
+          getFilenameWithoutExtension(file).concat("_cropped"),
+          ".jpg",
           activity.getExternalCacheDir()
         ).getPath();
 
-  			OutputStream outputStream = new FileOutputStream(outputFileName);
-  			bos.writeTo(outputStream);
+
+            outputStream = new FileOutputStream(outputFileName);
+            bos.writeTo(outputStream);
 
         copyExif(fileName, outputFileName);
 
@@ -158,9 +165,19 @@ public class FlutterNativeImagePlugin implements MethodCallHandler {
   			e.printStackTrace();
         result.error("file does not exist", fileName, null);
   		} catch (IOException e) {
-  			e.printStackTrace();
-        result.error("something went wrong", fileName, null);
-  		}
+            e.printStackTrace();
+            result.error("something went wrong", fileName, null);
+        }finally {
+            if (outputStream != null) {
+                try {
+                    outputStream.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+
 
   		return;
     }
